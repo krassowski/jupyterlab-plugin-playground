@@ -187,7 +187,6 @@ class PluginPlayground {
     const pluginLoader = new PluginLoader({
       transpiler: new PluginTranspiler({
         compilerOptions: {
-          module: ts.ModuleKind.ES2020,
           target: ts.ScriptTarget.ES2017
         }
       }),

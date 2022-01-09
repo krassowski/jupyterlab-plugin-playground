@@ -5,14 +5,12 @@ import { NoDefaultExportError, PluginTranspiler } from './transpiler';
 
 import { IRequireJS } from './requirejs';
 
-import { IModule, IModuleMember } from './types';
+import { IModule } from './types';
 
 export namespace PluginLoader {
   export interface IOptions {
     transpiler: PluginTranspiler;
-    importFunction(
-      statement: PluginTranspiler.IImportStatement
-    ): Promise<Token<any> | IModule | IModuleMember>;
+    importFunction(module: string): Promise<IModule>;
     tokenMap: Map<string, Token<any>>;
     /**
      * For backward-compatibility with plugins using requirejs over `import`;
@@ -41,7 +39,7 @@ export class PluginLoader {
     let plugin;
     let transpiled = true;
     try {
-      functionBody = this._options.transpiler.transpile(code);
+      functionBody = this._options.transpiler.transpile(code, true);
     } catch (error) {
       if (error instanceof NoDefaultExportError) {
         // no export statment
@@ -60,10 +58,12 @@ export class PluginLoader {
 
     try {
       if (transpiled) {
-        plugin = await new AsyncFunction(
-          this._options.transpiler.importFunctionName,
-          functionBody
-        )(this._options.importFunction);
+        plugin = (
+          await new AsyncFunction(
+            this._options.transpiler.importFunctionName,
+            functionBody
+          )(this._options.importFunction)
+        ).default;
       } else {
         const requirejs = this._options.requirejs;
         plugin = new Function('require', 'requirejs', 'define', functionBody)(
@@ -80,6 +80,7 @@ export class PluginLoader {
     if (typeof plugin === 'function') {
       plugin = plugin();
     }
+    console.log(plugin);
 
     // Finally, we allow returning a promise (or an async function above).
     plugin = (await Promise.resolve(plugin)) as IPlugin<any, any>;
