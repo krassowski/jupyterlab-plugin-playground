@@ -37,7 +37,7 @@ export class PluginTranspiler {
     const result = ts.transpileModule(code, {
       compilerOptions: this._options.compilerOptions,
       transformers: {
-        before: [this._importTransformer(), this._exportDefaultTransformer()]
+        before: [this._importTransformer(), this._exportTransformer()]
       }
     });
     // Module rules add empty `export` even after we replaced it in AST,
@@ -156,26 +156,42 @@ export class PluginTranspiler {
     };
   }
 
-  private _exportDefaultTransformer(): ts.TransformerFactory<ts.SourceFile> {
+  private _exportTransformer(): ts.TransformerFactory<ts.SourceFile> {
     return context => {
       let defaultExport: ts.Expression | null = null;
+      let exports: Map<string, ts.Expression> = new Map();
 
       const visit: ts.Visitor = node => {
-        if (ts.isExportSpecifier(node)) {
-          console.warn(
-            'Export specifier not supported: ' + node.getText(),
-            node
-          );
-          return;
-        }
+        // Example export declarations:
+        // - `export { ZipCodeValidator }`
+        // - `export { ZipCodeValidator as mainValidator };`
+        // - `export * from "foo";` - this one will lack export clause
         if (ts.isExportDeclaration(node)) {
-          console.warn(
-            'Export declaration not supported: ' + node.getText(),
-            node
-          );
+          if (node.exportClause) {
+            if (ts.isNamedExports(node.exportClause)) {
+              for (let specifier of node.exportClause.elements) {
+                exports.set(
+                  specifier.name.text,
+                  specifier.propertyName
+                    ? specifier.propertyName
+                    : specifier.name
+                );
+              }
+            } else if (ts.isNamespaceExport(node.exportClause)) {
+              console.warn(
+                'Namespace export not supported: ' + node.getText(),
+                node
+              );
+            }
+          } else {
+            console.warn(
+              'Export declaration not supported: ' + node.getText(),
+              node
+            );
+          }
           return;
         }
-
+        // default export
         if (ts.isExportAssignment(node)) {
           const hasDefaultClause = node
             .getChildren()
@@ -190,21 +206,59 @@ export class PluginTranspiler {
             );
           }
           return;
-        } else {
+        }
+        // All other syntatic elements which can have "export" modifier:
+        // - `export interface StringValidator {}`
+        if (
+          node.modifiers &&
+          node.modifiers.some(
+            modifier => modifier.kind == ts.SyntaxKind.ExportKeyword
+          )
+        ) {
+          if (ts.isVariableStatement(node)) {
+            for (const declaration of node.declarationList.declarations) {
+              exports.set(
+                declaration.name.getText(),
+                ts.factory.createIdentifier(declaration.name.getText())
+              );
+            }
+          } else if (ts.isInterfaceDeclaration(node)) {
+            // Irrelevant - pass
+          }
           return ts.visitEachChild(node, child => visit(child), context);
         }
+        if (node.kind === ts.SyntaxKind.ExportKeyword) {
+          // Strip export keywords from any syntax with export modifier.
+          return;
+        }
+
+        return ts.visitEachChild(node, child => visit(child), context);
       };
 
       return source => {
         const withoutExports = ts.visitNode(source, visit);
-        if (!defaultExport) {
-          throw new NoDefaultExportError('Default export not found');
+        const exportProperties: ts.ObjectLiteralElementLike[] = [
+          ts.factory.createPropertyAssignment(
+            'nonDefault',
+            ts.factory.createObjectLiteralExpression(
+              [...exports.entries()].map(([name, exportedExpression]) =>
+                ts.factory.createPropertyAssignment(name, exportedExpression)
+              )
+            )
+          )
+        ];
+        if (defaultExport) {
+          exportProperties.push(
+            ts.factory.createPropertyAssignment('default', defaultExport)
+          );
         }
         return ts.factory.updateSourceFile(withoutExports, [
           // original statements
           ...withoutExports.statements,
           // the default export as returned value
-          ts.factory.createReturnStatement(defaultExport)
+          ts.factory.createReturnStatement(
+            ts.factory.createObjectLiteralExpression(exportProperties)
+          )
         ]);
       };
     };
